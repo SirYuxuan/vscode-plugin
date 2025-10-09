@@ -1,0 +1,94 @@
+{
+  "name": "yuxuanplugin",
+  "displayName": "YuxuanPlugin",
+  "description": "一个自定义的 VS Code 插件",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.104.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "yuxuanplugin.copyOfArthas",
+        "title": "Copy of arthas",
+        "category": "Yuxuan"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "submenu": "yuxuan.submenu",
+          "group": "navigation"
+        }
+      ],
+      "yuxuan.submenu": [
+        {
+          "command": "yuxuanplugin.copyOfArthas",
+          "group": "arthas"
+        }
+      ]
+    },
+    "submenus": [
+      {
+        "id": "yuxuan.submenu",
+        "label": "Yuxuan"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "YuxuanPlugin Configuration",
+      "properties": {
+        "yuxuanplugin.arthas.serverBasePath": {
+          "type": "string",
+          "default": "/opt/arthas",
+          "description": "Arthas服务器上的文件基础路径，用于构建class文件的完整路径",
+          "scope": "resource"
+        },
+        "yuxuanplugin.arthas.serverHost": {
+          "type": "string",
+          "default": "localhost",
+          "description": "Arthas服务器主机地址",
+          "scope": "resource"
+        },
+        "yuxuanplugin.arthas.serverPort": {
+          "type": "number",
+          "default": 3658,
+          "description": "Arthas服务器端口号",
+          "scope": "resource",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "webpack",
+    "watch": "webpack --watch",
+    "package": "webpack --mode production --devtool hidden-source-map",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.104.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@typescript-eslint/eslint-plugin": "^8.42.0",
+    "@typescript-eslint/parser": "^8.42.0",
+    "eslint": "^9.34.0",
+    "typescript": "^5.9.2",
+    "ts-loader": "^9.5.4",
+    "webpack": "^5.101.3",
+    "webpack-cli": "^6.0.1",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.5.2"
+  }
+}
