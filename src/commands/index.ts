@@ -5,6 +5,7 @@
 
 import * as vscode from 'vscode';
 import { ArthasCommands } from './arthasCommands';
+import { XmlNavigationCommands, navigateToClass } from './xmlNavigationCommands';
 
 /**
  * 命令管理器类
@@ -12,14 +13,11 @@ import { ArthasCommands } from './arthasCommands';
  */
 export class CommandManager {
     private readonly arthasCommands: ArthasCommands;
+    private readonly xmlNavigationCommands: XmlNavigationCommands;
 
     constructor(private readonly context: vscode.ExtensionContext) {
         this.arthasCommands = new ArthasCommands();
-
-        // 注册资源释放
-        this.context.subscriptions.push({
-            dispose: () => this.arthasCommands.dispose()
-        });
+        this.xmlNavigationCommands = new XmlNavigationCommands();
     }
 
     /**
@@ -28,6 +26,7 @@ export class CommandManager {
      */
     public registerAll(): void {
         this.registerArthasCommands();
+        this.registerXmlNavigationCommands();
     }
 
     /**
@@ -40,5 +39,24 @@ export class CommandManager {
         );
 
         this.context.subscriptions.push(copyOfArthasCommand);
+    }
+
+    /**
+     * 注册XML导航相关命令
+     */
+    private registerXmlNavigationCommands(): void {
+        // 注册跳转到Java类的命令
+        const jumpToJavaClassCommand = vscode.commands.registerCommand(
+            'yuxuanplugin.jumpToJavaClass',
+            () => this.xmlNavigationCommands.jumpToJavaClass()
+        );
+
+        // 注册导航到类的命令
+        const navigateToClassCommand = vscode.commands.registerCommand(
+            'yuxuanplugin.navigateToClass',
+            navigateToClass
+        );
+
+        this.context.subscriptions.push(jumpToJavaClassCommand, navigateToClassCommand);
     }
 }

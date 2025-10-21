@@ -9,9 +9,7 @@ import * as vscode from 'vscode';
  * Arthas配置接口
  */
 export interface ArthasConfig {
-    serverBasePath: string;
-    serverHost: string;
-    serverPort: number;
+    basePath: string;
 }
 
 /**
@@ -30,11 +28,9 @@ export class ConfigManager {
         const config = vscode.workspace.getConfiguration(this.EXTENSION_NAME);
 
         return {
-            serverBasePath: this.normalizeBasePath(
-                config.get<string>(`${this.CONFIG_SECTION}.serverBasePath`, '/opt/arthas')
-            ),
-            serverHost: config.get<string>(`${this.CONFIG_SECTION}.serverHost`, 'localhost'),
-            serverPort: config.get<number>(`${this.CONFIG_SECTION}.serverPort`, 3658)
+            basePath: this.normalizeBasePath(
+                config.get<string>(`${this.CONFIG_SECTION}.basePath`, '/opt/arthas')
+            )
         };
     }
 
@@ -70,17 +66,7 @@ export class ConfigManager {
         const arthasConfig = config || this.getArthasConfig();
         const cleanRelativePath = relativePath.replace(/^\/+/, ''); // 移除开头的斜杠
 
-        return `${arthasConfig.serverBasePath}/${cleanRelativePath}`;
-    }
-
-    /**
-     * 构建服务器地址
-     * @param config 可选的配置对象，不提供则使用当前配置
-     * @returns 服务器地址字符串
-     */
-    public static buildServerAddress(config?: ArthasConfig): string {
-        const arthasConfig = config || this.getArthasConfig();
-        return `${arthasConfig.serverHost}:${arthasConfig.serverPort}`;
+        return `${arthasConfig.basePath}/${cleanRelativePath}`;
     }
 
     /**
@@ -92,24 +78,8 @@ export class ConfigManager {
         const errors: string[] = [];
 
         // 验证基础路径
-        if (!config.serverBasePath || config.serverBasePath.trim().length === 0) {
-            errors.push('服务器基础路径不能为空');
-        }
-
-        // 验证主机地址
-        if (!config.serverHost || config.serverHost.trim().length === 0) {
-            errors.push('服务器主机地址不能为空');
-        } else {
-            // 简单的主机名/IP验证
-            const hostPattern = /^([a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+$|^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
-            if (!hostPattern.test(config.serverHost.trim())) {
-                errors.push('服务器主机地址格式无效');
-            }
-        }
-
-        // 验证端口号
-        if (!Number.isInteger(config.serverPort) || config.serverPort < 1 || config.serverPort > 65535) {
-            errors.push('端口号必须是1-65535之间的整数');
+        if (!config.basePath || config.basePath.trim().length === 0) {
+            errors.push('Arthas基础路径不能为空');
         }
 
         return {
