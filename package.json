@@ -17,16 +17,6 @@
         "command": "yuxuanplugin.copyOfArthas",
         "title": "Copy of arthas",
         "category": "Yuxuan"
-      },
-      {
-        "command": "yuxuanplugin.navigateToClass",
-        "title": "Navigate to Class",
-        "category": "Yuxuan"
-      },
-      {
-        "command": "yuxuanplugin.jumpToJavaClass",
-        "title": "跳转到Java类",
-        "category": "Yuxuan"
       }
     ],
     "menus": {
@@ -40,11 +30,6 @@
         {
           "command": "yuxuanplugin.copyOfArthas",
           "group": "arthas"
-        },
-        {
-          "command": "yuxuanplugin.jumpToJavaClass",
-          "group": "xml",
-          "when": "resourceExtname == .xml"
         }
       ]
     },

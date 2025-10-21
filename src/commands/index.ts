@@ -5,7 +5,7 @@
 
 import * as vscode from 'vscode';
 import { ArthasCommands } from './arthasCommands';
-import { XmlNavigationCommands, navigateToClass } from './xmlNavigationCommands';
+import { XmlJavaClassLinkProvider } from './xmlNavigationCommands';
 
 /**
  * 命令管理器类
@@ -13,11 +13,11 @@ import { XmlNavigationCommands, navigateToClass } from './xmlNavigationCommands'
  */
 export class CommandManager {
     private readonly arthasCommands: ArthasCommands;
-    private readonly xmlNavigationCommands: XmlNavigationCommands;
+    private readonly xmlJavaClassLinkProvider: XmlJavaClassLinkProvider;
 
     constructor(private readonly context: vscode.ExtensionContext) {
         this.arthasCommands = new ArthasCommands();
-        this.xmlNavigationCommands = new XmlNavigationCommands();
+        this.xmlJavaClassLinkProvider = new XmlJavaClassLinkProvider();
     }
 
     /**
@@ -26,7 +26,7 @@ export class CommandManager {
      */
     public registerAll(): void {
         this.registerArthasCommands();
-        this.registerXmlNavigationCommands();
+        this.registerXmlDocumentLinkProvider();
     }
 
     /**
@@ -42,21 +42,15 @@ export class CommandManager {
     }
 
     /**
-     * 注册XML导航相关命令
+     * 注册XML文档链接提供者
      */
-    private registerXmlNavigationCommands(): void {
-        // 注册跳转到Java类的命令
-        const jumpToJavaClassCommand = vscode.commands.registerCommand(
-            'yuxuanplugin.jumpToJavaClass',
-            () => this.xmlNavigationCommands.jumpToJavaClass()
+    private registerXmlDocumentLinkProvider(): void {
+        // 注册XML文档链接提供者，用于在XML文件中显示Java类的超链接
+        const xmlLinkProvider = vscode.languages.registerDocumentLinkProvider(
+            { scheme: 'file', language: 'xml' },
+            this.xmlJavaClassLinkProvider
         );
 
-        // 注册导航到类的命令
-        const navigateToClassCommand = vscode.commands.registerCommand(
-            'yuxuanplugin.navigateToClass',
-            navigateToClass
-        );
-
-        this.context.subscriptions.push(jumpToJavaClassCommand, navigateToClassCommand);
+        this.context.subscriptions.push(xmlLinkProvider);
     }
 }
