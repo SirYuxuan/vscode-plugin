@@ -4,7 +4,7 @@
  */
 
 import * as vscode from 'vscode';
-import { CommandManager } from './commands';
+import { CommandManager } from './core/commandManager';
 
 /**
  * 扩展激活函数

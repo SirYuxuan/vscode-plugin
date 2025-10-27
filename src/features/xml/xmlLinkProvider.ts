@@ -125,20 +125,17 @@ export class XmlJavaClassLinkProvider implements vscode.DocumentLinkProvider {
     private isValidJavaClassName(className: string): boolean {
         console.log('Validating class name:', className);
 
-        // 基本检查：必须包含点号
         if (!className.includes('.')) {
             console.log('No dot found in class name');
             return false;
         }
 
-        // 分割包名和类名
         const parts = className.split('.');
         if (parts.length < 2) {
             console.log('Not enough parts in class name');
             return false;
         }
 
-        // 检查最后一部分（类名）是否以大写字母开头
         const actualClassName = parts[parts.length - 1];
         const isValid = /^[A-Z][a-zA-Z0-9_$]*$/.test(actualClassName);
         console.log('Class name validation result:', isValid, 'for:', actualClassName);
@@ -190,7 +187,6 @@ export class XmlJavaClassLinkProvider implements vscode.DocumentLinkProvider {
             }
         }
 
-        // 如果没有找到包名匹配的文件，返回null而不是第一个文件
         return null;
     }
 }

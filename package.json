@@ -20,25 +20,47 @@
         "command": "yuxuanplugin.copyOfArthas",
         "title": "Copy of arthas",
         "category": "Yuxuan"
+      },
+      {
+        "command": "yuxuanplugin.upload",
+        "title": "上传",
+        "category": "Yuxuan"
       }
     ],
     "menus": {
       "editor/context": [
         {
-          "submenu": "yuxuan.submenu",
+          "submenu": "yuxuan.editorMenu",
           "group": "navigation"
         }
       ],
-      "yuxuan.submenu": [
+      "explorer/context": [
+        {
+          "submenu": "yuxuan.explorerMenu",
+          "group": "navigation",
+          "when": "(resourcePath =~ /src\\/main\\/java\\/com(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/WEB-INF(\\/|$)/)"
+        }
+      ],
+      "yuxuan.editorMenu": [
         {
           "command": "yuxuanplugin.copyOfArthas",
           "group": "arthas"
+        }
+      ],
+      "yuxuan.explorerMenu": [
+        {
+          "command": "yuxuanplugin.upload",
+          "group": "upload"
         }
       ]
     },
     "submenus": [
       {
-        "id": "yuxuan.submenu",
+        "id": "yuxuan.editorMenu",
+        "label": "Yuxuan"
+      },
+      {
+        "id": "yuxuan.explorerMenu",
         "label": "Yuxuan"
       }
     ],
@@ -46,11 +68,47 @@
       "type": "object",
       "title": "YuxuanPlugin Configuration",
       "properties": {
+        "yuxuanplugin.server.host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "服务器IP地址",
+          "scope": "resource",
+          "order": 10
+        },
+        "yuxuanplugin.server.port": {
+          "type": "number",
+          "default": 22,
+          "description": "服务器端口号",
+          "scope": "resource",
+          "order": 20
+        },
+        "yuxuanplugin.server.username": {
+          "type": "string",
+          "default": "",
+          "description": "服务器登录账号",
+          "scope": "resource",
+          "order": 30
+        },
+        "yuxuanplugin.server.password": {
+          "type": "string",
+          "default": "",
+          "description": "服务器登录密码",
+          "scope": "resource",
+          "order": 40
+        },
+        "yuxuanplugin.server.projectPath": {
+          "type": "string",
+          "default": "/opt/project",
+          "description": "服务器上的项目路径",
+          "scope": "resource",
+          "order": 50
+        },
         "yuxuanplugin.arthas.basePath": {
           "type": "string",
           "default": "/opt/arthas",
           "description": "Arthas的基础目录路径",
-          "scope": "resource"
+          "scope": "resource",
+          "order": 60
         }
       }
     }
@@ -66,18 +124,22 @@
     "lint": "eslint src",
     "test": "vscode-test"
   },
+  "dependencies": {
+    "ssh2-sftp-client": "^12.0.1"
+  },
   "devDependencies": {
-    "@types/vscode": "^1.104.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
+    "@types/ssh2-sftp-client": "^9.0.5",
+    "@types/vscode": "^1.104.0",
     "@typescript-eslint/eslint-plugin": "^8.42.0",
     "@typescript-eslint/parser": "^8.42.0",
-    "eslint": "^9.34.0",
-    "typescript": "^5.9.2",
-    "ts-loader": "^9.5.4",
-    "webpack": "^5.101.3",
-    "webpack-cli": "^6.0.1",
     "@vscode/test-cli": "^0.0.11",
-    "@vscode/test-electron": "^2.5.2"
+    "@vscode/test-electron": "^2.5.2",
+    "eslint": "^9.34.0",
+    "ts-loader": "^9.5.4",
+    "typescript": "^5.9.2",
+    "webpack": "^5.101.3",
+    "webpack-cli": "^6.0.1"
   }
 }

@@ -1,37 +1,30 @@
 /**
- * 命令模块 - 统一管理所有命令
- * 提供命令注册和执行的统一入口
+ * 统一注册扩展内的命令与提供者，便于集中管理与扩展。
  */
 
 import * as vscode from 'vscode';
-import { ArthasCommands } from './arthasCommands';
-import { XmlJavaClassLinkProvider } from './xmlNavigationCommands';
+import { ArthasCommands } from '../features/arthas/arthasCommands';
+import { UploadCommands } from '../features/upload/uploadCommands';
+import { XmlJavaClassLinkProvider } from '../features/xml/xmlLinkProvider';
 
-/**
- * 命令管理器类
- * 负责注册和管理所有扩展命令
- */
 export class CommandManager {
     private readonly arthasCommands: ArthasCommands;
     private readonly xmlJavaClassLinkProvider: XmlJavaClassLinkProvider;
+    private readonly uploadCommands: UploadCommands;
 
     constructor(private readonly context: vscode.ExtensionContext) {
         this.arthasCommands = new ArthasCommands();
         this.xmlJavaClassLinkProvider = new XmlJavaClassLinkProvider();
+        this.uploadCommands = new UploadCommands();
+        this.context.subscriptions.push(this.uploadCommands);
     }
 
-    /**
-     * 注册所有命令
-     * 将命令注册到VS Code扩展上下文中
-     */
     public registerAll(): void {
         this.registerArthasCommands();
+        this.registerUploadCommands();
         this.registerXmlDocumentLinkProvider();
     }
 
-    /**
-     * 注册Arthas相关命令
-     */
     private registerArthasCommands(): void {
         const copyOfArthasCommand = vscode.commands.registerCommand(
             'yuxuanplugin.copyOfArthas',
@@ -41,12 +34,16 @@ export class CommandManager {
         this.context.subscriptions.push(copyOfArthasCommand);
     }
 
-    /**
-     * 注册XML文档链接提供者
-     */
+    private registerUploadCommands(): void {
+        const uploadCommand = vscode.commands.registerCommand(
+            'yuxuanplugin.upload',
+            (target: vscode.Uri) => this.uploadCommands.upload(target)
+        );
+
+        this.context.subscriptions.push(uploadCommand);
+    }
+
     private registerXmlDocumentLinkProvider(): void {
-        // 注册XML文档链接提供者，用于在所有.xml文件中显示Java类的超链接
-        // 使用 pattern 而不是 language 来匹配所有 .xml 文件
         const xmlLinkProvider = vscode.languages.registerDocumentLinkProvider(
             { scheme: 'file', pattern: '**/*.xml' },
             this.xmlJavaClassLinkProvider
