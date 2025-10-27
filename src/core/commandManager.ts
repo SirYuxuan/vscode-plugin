@@ -40,7 +40,13 @@ export class CommandManager {
             (target: vscode.Uri) => this.uploadCommands.upload(target)
         );
 
+        const deleteCommand = vscode.commands.registerCommand(
+            'yuxuanplugin.delete',
+            (target: vscode.Uri) => this.uploadCommands.delete(target)
+        );
+
         this.context.subscriptions.push(uploadCommand);
+        this.context.subscriptions.push(deleteCommand);
     }
 
     private registerXmlDocumentLinkProvider(): void {

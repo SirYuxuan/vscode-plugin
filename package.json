@@ -25,6 +25,11 @@
         "command": "yuxuanplugin.upload",
         "title": "上传",
         "category": "Yuxuan"
+      },
+      {
+        "command": "yuxuanplugin.delete",
+        "title": "删除",
+        "category": "Yuxuan"
       }
     ],
     "menus": {
@@ -51,6 +56,10 @@
         {
           "command": "yuxuanplugin.upload",
           "group": "upload"
+        },
+        {
+          "command": "yuxuanplugin.delete",
+          "group": "delete"
         }
       ]
     },

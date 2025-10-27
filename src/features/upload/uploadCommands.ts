@@ -55,6 +55,105 @@ export class UploadCommands implements vscode.Disposable {
         vscode.window.showWarningMessage('当前选择的路径不在支持的上传范围内。');
     }
 
+    public async delete(target?: vscode.Uri): Promise<void> {
+        this.log('delete command triggered');
+
+        if (!target) {
+            this.log('no target provided for delete');
+            vscode.window.showWarningMessage('请选择需要删除的资源。');
+            return;
+        }
+
+        if (!target.fsPath) {
+            this.log('target missing fsPath for delete', target.toString());
+            vscode.window.showWarningMessage('无法获取所选资源路径。');
+            return;
+        }
+
+        const normalizedPath = target.fsPath.replace(/\\/g, '/');
+        this.log('normalized target path for delete', normalizedPath);
+
+        let deleteBranch: 'webInf' | 'java' | undefined;
+
+        if (normalizedPath.includes(UploadCommands.WEB_INF_MARKER)) {
+            deleteBranch = 'webInf';
+        } else if (normalizedPath.includes(UploadCommands.SRC_JAVA_MARKER)) {
+            deleteBranch = 'java';
+        }
+
+        if (!deleteBranch) {
+            this.log('delete path outside supported scope');
+            vscode.window.showWarningMessage('当前选择的路径不在支持的删除范围内。');
+            return;
+        }
+
+        let stat: Stats;
+
+        try {
+            stat = await fs.stat(target.fsPath);
+        } catch (error) {
+            this.log('failed to stat target for delete', error);
+            vscode.window.showErrorMessage(`无法读取本地路径: ${error instanceof Error ? error.message : String(error)}`);
+            return;
+        }
+
+        const choice = await vscode.window.showInformationMessage(
+            '是否同时删除本地文件？',
+            { modal: true },
+            '是',
+            '否'
+        );
+
+        if (!choice) {
+            this.log('delete cancelled by user');
+            return;
+        }
+
+        const removeLocal = choice === '是';
+
+        const config = ConfigManager.getServerConfig();
+        const validationError = this.validateServerConfig(config);
+
+        if (validationError) {
+            this.log('invalid server configuration for delete', validationError);
+            vscode.window.showErrorMessage(validationError);
+            return;
+        }
+
+        const sftp = new SftpClient();
+
+        try {
+            await sftp.connect({
+                host: config.host,
+                port: config.port,
+                username: config.username,
+                password: config.password
+            });
+
+            if (deleteBranch === 'webInf') {
+                await this.deleteWebInfResource(sftp, normalizedPath);
+            } else {
+                await this.deleteJavaResource(sftp, normalizedPath, stat);
+            }
+
+            vscode.window.showInformationMessage('远程资源删除完成。');
+
+            if (removeLocal) {
+                await this.removeLocalPath(target.fsPath, stat.isDirectory());
+                vscode.window.showInformationMessage('本地资源已删除。');
+            }
+        } catch (error) {
+            this.log('delete failed', error);
+            vscode.window.showErrorMessage(`删除失败: ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+            try {
+                await sftp.end();
+            } catch (closeError) {
+                this.log('failed to close sftp connection after delete', closeError);
+            }
+        }
+    }
+
     public dispose(): void {
         this.outputChannel.dispose();
     }
@@ -109,6 +208,101 @@ export class UploadCommands implements vscode.Disposable {
                 this.log('failed to close sftp connection', closeError);
             }
         }
+    }
+
+    private async deleteWebInfResource(client: SftpClient, normalizedLocalPath: string): Promise<void> {
+        const config = ConfigManager.getServerConfig();
+        const relativePath = this.extractRelativeWebInfPath(normalizedLocalPath);
+        const remoteBase = this.joinRemotePaths(config.projectPath, 'WEB-INF');
+        const remoteTarget = relativePath
+            ? this.joinRemotePaths(remoteBase, relativePath)
+            : remoteBase;
+
+        this.log('deleting WEB-INF resource', remoteTarget);
+        await this.removeRemotePath(client, remoteTarget);
+    }
+
+    private async deleteJavaResource(client: SftpClient, normalizedLocalPath: string, stat: Stats): Promise<void> {
+        const config = ConfigManager.getServerConfig();
+        const projectRoot = this.extractJavaProjectRoot(normalizedLocalPath);
+
+        if (!projectRoot) {
+            this.log('unable to determine project root for delete', normalizedLocalPath);
+            vscode.window.showErrorMessage('无法识别所选 Java 源文件所属的项目根目录。');
+            return;
+        }
+
+        const relativeJavaPath = this.extractRelativeJavaPath(normalizedLocalPath);
+
+        if (!relativeJavaPath) {
+            this.log('unable to resolve relative java path for delete', normalizedLocalPath);
+            vscode.window.showWarningMessage('无法解析所选 Java 源文件的相对路径。');
+            return;
+        }
+
+        const remoteBase = this.joinRemotePaths(config.projectPath, 'WEB-INF', 'classes');
+
+        if (stat.isDirectory()) {
+            const remoteTarget = relativeJavaPath
+                ? this.joinRemotePaths(remoteBase, relativeJavaPath)
+                : remoteBase;
+
+            this.log('deleting Java directory', remoteTarget);
+            await this.removeRemotePath(client, remoteTarget);
+            return;
+        }
+
+        const ext = path.extname(normalizedLocalPath);
+
+        if (ext !== '.java') {
+            this.log('unsupported file type for java delete', ext);
+            vscode.window.showWarningMessage('仅支持删除 Java 源文件。');
+            return;
+        }
+
+        let relativeDir = path.posix.dirname(relativeJavaPath);
+
+        if (relativeDir === '.') {
+            relativeDir = '';
+        }
+
+        const targetClassesRoot = path.join(projectRoot, 'target', 'classes');
+        const compiledDir = relativeDir
+            ? path.join(targetClassesRoot, this.toFsPath(relativeDir))
+            : targetClassesRoot;
+
+        const classBaseName = path.basename(relativeJavaPath, '.java');
+
+        let classFiles: string[] = [];
+
+        if (await this.pathExists(compiledDir)) {
+            classFiles = await this.collectClassFiles(compiledDir, classBaseName);
+        }
+
+        const remoteDir = relativeDir
+            ? this.joinRemotePaths(remoteBase, relativeDir)
+            : remoteBase;
+
+        if (classFiles.length === 0) {
+            this.log('no local class files found, checking remote directory', remoteDir);
+            classFiles = await this.collectRemoteClassFiles(client, remoteDir, classBaseName);
+        }
+
+        if (classFiles.length === 0) {
+            this.log('no class files to delete for java source', {
+                remoteDir,
+                classBaseName
+            });
+            vscode.window.showWarningMessage('未找到需要删除的 class 文件。');
+            return;
+        }
+
+        for (const file of classFiles) {
+            const remoteClassPath = this.joinRemotePaths(remoteDir, file);
+            await this.removeRemotePath(client, remoteClassPath);
+        }
+
+        this.log('deleted class files for java source', classFiles);
     }
 
     private async uploadJavaResource(localPath: string): Promise<void> {
@@ -312,6 +506,34 @@ export class UploadCommands implements vscode.Disposable {
         }
     }
 
+    private async collectRemoteClassFiles(client: SftpClient, remoteDir: string, baseName: string): Promise<string[]> {
+        try {
+            const exists = await client.exists(remoteDir);
+
+            if (!exists) {
+                this.log('remote directory not found for class files', remoteDir);
+                return [];
+            }
+
+            if (exists !== 'd') {
+                this.log('remote path is not directory for class files', remoteDir);
+                return [];
+            }
+
+            const entries = await client.list(remoteDir);
+            const pattern = new RegExp(`^${this.escapeRegExp(baseName)}(\\$.*)?\\.class$`);
+
+            return entries.filter((entry) => pattern.test(entry.name)).map((entry) => entry.name);
+        } catch (error) {
+            this.log('failed to list remote class files', {
+                remoteDir,
+                error: error instanceof Error ? error.message : String(error)
+            });
+
+            return [];
+        }
+    }
+
     private escapeRegExp(value: string): string {
         return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
@@ -417,6 +639,52 @@ export class UploadCommands implements vscode.Disposable {
         }
 
         return undefined;
+    }
+
+    private async removeRemotePath(client: SftpClient, remotePath: string): Promise<void> {
+        if (!remotePath || remotePath === '/') {
+            this.log('refusing to remove remote root path', remotePath);
+            return;
+        }
+
+        const exists = await client.exists(remotePath);
+
+        if (!exists) {
+            this.log('remote path does not exist', remotePath);
+            return;
+        }
+
+        if (exists === 'd') {
+            const entries = await client.list(remotePath);
+
+            for (const entry of entries) {
+                const childPath = this.joinRemotePaths(remotePath, entry.name);
+
+                if (entry.type === 'd') {
+                    await this.removeRemotePath(client, childPath);
+                } else {
+                    await client.delete(childPath);
+                    this.log('deleted remote file', childPath);
+                }
+            }
+
+            await client.rmdir(remotePath);
+            this.log('removed remote directory', remotePath);
+            return;
+        }
+
+        await client.delete(remotePath);
+        this.log('deleted remote file', remotePath);
+    }
+
+    private async removeLocalPath(localPath: string, isDirectory: boolean): Promise<void> {
+        try {
+            await fs.rm(localPath, { recursive: isDirectory, force: true });
+            this.log('deleted local path', localPath);
+        } catch (error) {
+            this.log('failed to delete local path', error);
+            vscode.window.showErrorMessage(`删除本地文件失败: ${error instanceof Error ? error.message : String(error)}`);
+        }
     }
 
     private log(message: string, extra?: unknown): void {
