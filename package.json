@@ -2,14 +2,17 @@
   "name": "yuxuanplugin",
   "displayName": "YuxuanPlugin",
   "description": "一个自定义的 VS Code 插件",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "engines": {
     "vscode": "^1.104.0"
   },
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished",
+    "onLanguage:xml"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [

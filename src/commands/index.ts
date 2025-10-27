@@ -45,9 +45,10 @@ export class CommandManager {
      * 注册XML文档链接提供者
      */
     private registerXmlDocumentLinkProvider(): void {
-        // 注册XML文档链接提供者，用于在XML文件中显示Java类的超链接
+        // 注册XML文档链接提供者，用于在所有.xml文件中显示Java类的超链接
+        // 使用 pattern 而不是 language 来匹配所有 .xml 文件
         const xmlLinkProvider = vscode.languages.registerDocumentLinkProvider(
-            { scheme: 'file', language: 'xml' },
+            { scheme: 'file', pattern: '**/*.xml' },
             this.xmlJavaClassLinkProvider
         );
 
