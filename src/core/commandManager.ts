@@ -45,8 +45,14 @@ export class CommandManager {
             (target: vscode.Uri) => this.uploadCommands.delete(target)
         );
 
+        const findClassCommand = vscode.commands.registerCommand(
+            'yuxuanplugin.findClass',
+            (target: vscode.Uri) => this.uploadCommands.findClass(target)
+        );
+
         this.context.subscriptions.push(uploadCommand);
         this.context.subscriptions.push(deleteCommand);
+        this.context.subscriptions.push(findClassCommand);
     }
 
     private registerXmlDocumentLinkProvider(): void {

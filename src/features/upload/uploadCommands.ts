@@ -1,9 +1,13 @@
+import { exec } from 'child_process';
 import type { Stats } from 'fs';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import SftpClient from 'ssh2-sftp-client';
+import { promisify } from 'util';
 import * as vscode from 'vscode';
 import { ConfigManager, ServerConfig } from '../../core/config/configManager';
+
+const execAsync = promisify(exec);
 
 /**
  * 处理资源管理器中的上传相关命令。
@@ -15,7 +19,7 @@ export class UploadCommands implements vscode.Disposable {
     private readonly outputChannel: vscode.OutputChannel;
 
     constructor() {
-        this.outputChannel = vscode.window.createOutputChannel('Yuxuan Upload');
+        this.outputChannel = vscode.window.createOutputChannel('V5Dev Upload');
     }
 
     /**
@@ -156,6 +160,109 @@ export class UploadCommands implements vscode.Disposable {
 
     public dispose(): void {
         this.outputChannel.dispose();
+    }
+
+    public async findClass(target?: vscode.Uri): Promise<void> {
+        this.log('find class command triggered');
+
+        if (!target) {
+            this.log('no target provided for find class');
+            vscode.window.showWarningMessage('请选择需要查找的 Java 文件。');
+            return;
+        }
+
+        if (!target.fsPath) {
+            this.log('target missing fsPath for find class', target.toString());
+            vscode.window.showWarningMessage('无法获取所选资源路径。');
+            return;
+        }
+
+        const normalizedPath = target.fsPath.replace(/\\/g, '/');
+        this.log('normalized target path for find class', normalizedPath);
+
+        if (!normalizedPath.endsWith('.java')) {
+            this.log('target is not a java file');
+            vscode.window.showWarningMessage('请选择 Java 源文件。');
+            return;
+        }
+
+        if (!normalizedPath.includes(UploadCommands.SRC_JAVA_MARKER)) {
+            this.log('java file outside src/main/java structure');
+            vscode.window.showWarningMessage('Java 文件不在 src/main/java 目录结构中。');
+            return;
+        }
+
+        const projectRoot = this.extractJavaProjectRoot(normalizedPath);
+
+        if (!projectRoot) {
+            this.log('unable to determine project root for find class', normalizedPath);
+            vscode.window.showErrorMessage('无法识别所选 Java 源文件所属的项目根目录。');
+            return;
+        }
+
+        const relativeJavaPath = this.extractRelativeJavaPath(normalizedPath);
+
+        if (!relativeJavaPath) {
+            this.log('unable to resolve relative java path for find class', normalizedPath);
+            vscode.window.showWarningMessage('无法解析所选 Java 源文件的相对路径。');
+            return;
+        }
+
+        const targetClassesRoot = path.join(projectRoot, 'target', 'classes');
+
+        if (!(await this.pathExists(targetClassesRoot))) {
+            this.log('target/classes directory missing for find class', targetClassesRoot);
+            vscode.window.showWarningMessage('未找到编译输出目录 target/classes，请先执行构建。');
+            return;
+        }
+
+        let relativeDir = path.posix.dirname(relativeJavaPath);
+
+        if (relativeDir === '.') {
+            relativeDir = '';
+        }
+
+        const compiledDir = relativeDir
+            ? path.join(targetClassesRoot, this.toFsPath(relativeDir))
+            : targetClassesRoot;
+
+        if (!(await this.pathExists(compiledDir))) {
+            this.log('compiled directory not found for find class', compiledDir);
+            vscode.window.showWarningMessage('未找到对应的编译输出目录，请先执行构建。');
+            return;
+        }
+
+        const classBaseName = path.basename(relativeJavaPath, '.java');
+        const classFiles = await this.collectClassFiles(compiledDir, classBaseName);
+
+        if (classFiles.length === 0) {
+            this.log('no class files found for java source', {
+                compiledDir,
+                classBaseName
+            });
+            vscode.window.showWarningMessage('未找到对应的 class 文件，请确认项目已编译。');
+            return;
+        }
+
+        this.log('found class files', classFiles);
+        this.log('compiled directory', compiledDir);
+
+        if (classFiles.length === 1) {
+            const classPath = path.join(compiledDir, classFiles[0]);
+            this.log('final class path to reveal', classPath);
+            await this.revealClassFile(classPath);
+            return;
+        }
+
+        const selectedFile = await vscode.window.showQuickPick(classFiles, {
+            placeHolder: `找到 ${classFiles.length} 个 class 文件，请选择一个：`
+        });
+
+        if (selectedFile) {
+            const classPath = path.join(compiledDir, selectedFile);
+            this.log('final class path to reveal (multiple)', classPath);
+            await this.revealClassFile(classPath);
+        }
     }
 
     private async uploadWebInfResource(localPath: string): Promise<void> {
@@ -687,8 +794,45 @@ export class UploadCommands implements vscode.Disposable {
         }
     }
 
+    private async revealClassFile(classPath: string): Promise<void> {
+        try {
+            // 先检查文件是否存在
+            if (!(await this.pathExists(classPath))) {
+                this.log('class file does not exist', classPath);
+                vscode.window.showErrorMessage(`class 文件不存在: ${classPath}`);
+                return;
+            }
+
+            this.log('attempting to reveal class file in OS', classPath);
+
+            // 根据操作系统使用不同的命令打开文件管理器
+            const platform = process.platform;
+            let command: string;
+
+            if (platform === 'darwin') {
+                // macOS: 使用 open -R 命令在 Finder 中选中文件
+                command = `open -R "${classPath}"`;
+            } else if (platform === 'win32') {
+                // Windows: 使用 explorer /select 命令
+                command = `explorer /select,"${classPath.replace(/\//g, '\\')}"`;
+            } else {
+                // Linux: 尝试使用 xdg-open 打开文件所在目录
+                const dirPath = path.dirname(classPath);
+                command = `xdg-open "${dirPath}"`;
+            }
+
+            this.log('executing command', command);
+            await execAsync(command);
+            this.log('revealed class file in OS file manager', classPath);
+            vscode.window.showInformationMessage(`已在系统文件管理器中显示: ${path.basename(classPath)}`);
+        } catch (error) {
+            this.log('failed to reveal class file in OS', error);
+            vscode.window.showErrorMessage(`无法在文件管理器中显示文件: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+
     private log(message: string, extra?: unknown): void {
-        const parts = ['[Yuxuan Upload]', message];
+        const parts = ['[V5Dev]', message];
         if (extra !== undefined) {
             parts.push(this.formatExtra(extra));
         }

@@ -19,58 +19,70 @@
       {
         "command": "yuxuanplugin.copyOfArthas",
         "title": "Copy of arthas",
-        "category": "Yuxuan"
+        "category": "V5Dev"
+      },
+      {
+        "command": "yuxuanplugin.findClass",
+        "title": "寻找Class",
+        "category": "V5Dev"
       },
       {
         "command": "yuxuanplugin.upload",
         "title": "上传",
-        "category": "Yuxuan"
+        "category": "V5Dev"
       },
       {
         "command": "yuxuanplugin.delete",
         "title": "删除",
-        "category": "Yuxuan"
+        "category": "V5Dev"
       }
     ],
     "menus": {
       "editor/context": [
         {
-          "submenu": "yuxuan.editorMenu",
+          "submenu": "yuxuanplugin.editorMenu",
           "group": "navigation"
         }
       ],
       "explorer/context": [
         {
-          "submenu": "yuxuan.explorerMenu",
+          "submenu": "yuxuanplugin.explorerMenu",
           "group": "navigation",
           "when": "(resourcePath =~ /src\\/main\\/java\\/com(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/WEB-INF(\\/|$)/)"
         }
       ],
-      "yuxuan.editorMenu": [
+      "yuxuanplugin.editorMenu": [
         {
           "command": "yuxuanplugin.copyOfArthas",
           "group": "arthas"
         }
       ],
-      "yuxuan.explorerMenu": [
+      "yuxuanplugin.explorerMenu": [
+        {
+          "command": "yuxuanplugin.findClass",
+          "when": "resourceExtname == .java",
+          "group": "1_findClass"
+        },
         {
           "command": "yuxuanplugin.upload",
-          "group": "upload"
+          "when": "(resourcePath =~ /src\\/main\\/java\\/com(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/WEB-INF(\\/|$)/)",
+          "group": "2_upload"
         },
         {
           "command": "yuxuanplugin.delete",
-          "group": "delete"
+          "when": "(resourcePath =~ /src\\/main\\/java\\/com(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/WEB-INF(\\/|$)/)",
+          "group": "3_delete"
         }
       ]
     },
     "submenus": [
       {
-        "id": "yuxuan.editorMenu",
-        "label": "Yuxuan"
+        "id": "yuxuanplugin.editorMenu",
+        "label": "V5Dev"
       },
       {
-        "id": "yuxuan.explorerMenu",
-        "label": "Yuxuan"
+        "id": "yuxuanplugin.explorerMenu",
+        "label": "V5Dev"
       }
     ],
     "configuration": {
