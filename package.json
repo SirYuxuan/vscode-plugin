@@ -54,7 +54,22 @@
       "yuxuanplugin.editorMenu": [
         {
           "command": "yuxuanplugin.copyOfArthas",
-          "group": "arthas"
+          "group": "1_arthas"
+        },
+        {
+          "command": "yuxuanplugin.findClass",
+          "when": "resourceExtname == .java",
+          "group": "2_findClass"
+        },
+        {
+          "command": "yuxuanplugin.upload",
+          "when": "(resourcePath =~ /src\\/main\\/java\\/com(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/WEB-INF(\\/|$)/)",
+          "group": "3_upload"
+        },
+        {
+          "command": "yuxuanplugin.delete",
+          "when": "(resourcePath =~ /src\\/main\\/java\\/com(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/WEB-INF(\\/|$)/)",
+          "group": "4_delete"
         }
       ],
       "yuxuanplugin.explorerMenu": [
