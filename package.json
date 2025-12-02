@@ -48,7 +48,7 @@
         {
           "submenu": "yuxuanplugin.explorerMenu",
           "group": "navigation",
-          "when": "(resourcePath =~ /src\\/main\\/java\\/com(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/WEB-INF(\\/|$)/)"
+          "when": "(resourcePath =~ /src\\/main\\/java\\/com(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/WEB-INF(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/apps_res(\\/|$)/)"
         }
       ],
       "yuxuanplugin.editorMenu": [
@@ -63,12 +63,12 @@
         },
         {
           "command": "yuxuanplugin.upload",
-          "when": "(resourcePath =~ /src\\/main\\/java\\/com(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/WEB-INF(\\/|$)/)",
+          "when": "(resourcePath =~ /src\\/main\\/java\\/com(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/WEB-INF(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/apps_res(\\/|$)/)",
           "group": "3_upload"
         },
         {
           "command": "yuxuanplugin.delete",
-          "when": "(resourcePath =~ /src\\/main\\/java\\/com(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/WEB-INF(\\/|$)/)",
+          "when": "(resourcePath =~ /src\\/main\\/java\\/com(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/WEB-INF(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/apps_res(\\/|$)/)",
           "group": "4_delete"
         }
       ],
@@ -80,12 +80,12 @@
         },
         {
           "command": "yuxuanplugin.upload",
-          "when": "(resourcePath =~ /src\\/main\\/java\\/com(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/WEB-INF(\\/|$)/)",
+          "when": "(resourcePath =~ /src\\/main\\/java\\/com(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/WEB-INF(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/apps_res(\\/|$)/)",
           "group": "2_upload"
         },
         {
           "command": "yuxuanplugin.delete",
-          "when": "(resourcePath =~ /src\\/main\\/java\\/com(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/WEB-INF(\\/|$)/)",
+          "when": "(resourcePath =~ /src\\/main\\/java\\/com(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/WEB-INF(\\/|$)/) || (resourcePath =~ /src\\/main\\/webapp\\/apps_res(\\/|$)/)",
           "group": "3_delete"
         }
       ]

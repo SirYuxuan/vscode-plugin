@@ -14,6 +14,7 @@ const execAsync = promisify(exec);
  */
 export class UploadCommands implements vscode.Disposable {
     private static readonly WEB_INF_MARKER = '/src/main/webapp/WEB-INF/';
+    private static readonly APPS_RES_MARKER = '/src/main/webapp/apps_res/';
     private static readonly SRC_JAVA_MARKER = '/src/main/java/';
 
     private readonly outputChannel: vscode.OutputChannel;
@@ -49,6 +50,12 @@ export class UploadCommands implements vscode.Disposable {
             return;
         }
 
+        if (normalizedPath.includes(UploadCommands.APPS_RES_MARKER)) {
+            this.log('matched apps_res branch');
+            await this.uploadAppsResResource(target.fsPath);
+            return;
+        }
+
         if (normalizedPath.includes(UploadCommands.SRC_JAVA_MARKER)) {
             this.log('matched Java branch');
             await this.uploadJavaResource(target.fsPath);
@@ -77,10 +84,12 @@ export class UploadCommands implements vscode.Disposable {
         const normalizedPath = target.fsPath.replace(/\\/g, '/');
         this.log('normalized target path for delete', normalizedPath);
 
-        let deleteBranch: 'webInf' | 'java' | undefined;
+        let deleteBranch: 'webInf' | 'appsRes' | 'java' | undefined;
 
         if (normalizedPath.includes(UploadCommands.WEB_INF_MARKER)) {
             deleteBranch = 'webInf';
+        } else if (normalizedPath.includes(UploadCommands.APPS_RES_MARKER)) {
+            deleteBranch = 'appsRes';
         } else if (normalizedPath.includes(UploadCommands.SRC_JAVA_MARKER)) {
             deleteBranch = 'java';
         }
@@ -136,6 +145,8 @@ export class UploadCommands implements vscode.Disposable {
 
             if (deleteBranch === 'webInf') {
                 await this.deleteWebInfResource(sftp, normalizedPath);
+            } else if (deleteBranch === 'appsRes') {
+                await this.deleteAppsResResource(sftp, normalizedPath);
             } else {
                 await this.deleteJavaResource(sftp, normalizedPath, stat);
             }
@@ -326,6 +337,18 @@ export class UploadCommands implements vscode.Disposable {
             : remoteBase;
 
         this.log('deleting WEB-INF resource', remoteTarget);
+        await this.removeRemotePath(client, remoteTarget);
+    }
+
+    private async deleteAppsResResource(client: SftpClient, normalizedLocalPath: string): Promise<void> {
+        const config = ConfigManager.getServerConfig();
+        const relativePath = this.extractRelativeAppsResPath(normalizedLocalPath);
+        const remoteBase = this.joinRemotePaths(config.projectPath, 'apps_res');
+        const remoteTarget = relativePath
+            ? this.joinRemotePaths(remoteBase, relativePath)
+            : remoteBase;
+
+        this.log('deleting apps_res resource', remoteTarget);
         await this.removeRemotePath(client, remoteTarget);
     }
 
@@ -693,6 +716,70 @@ export class UploadCommands implements vscode.Disposable {
         const relative = normalizedLocalPath.substring(index + UploadCommands.WEB_INF_MARKER.length);
 
         return relative.replace(/^\/+/, '');
+    }
+
+    private extractRelativeAppsResPath(normalizedLocalPath: string): string {
+        const index = normalizedLocalPath.indexOf(UploadCommands.APPS_RES_MARKER);
+
+        if (index === -1) {
+            return '';
+        }
+
+        const relative = normalizedLocalPath.substring(index + UploadCommands.APPS_RES_MARKER.length);
+
+        return relative.replace(/^\/+/, '');
+    }
+
+    private async uploadAppsResResource(localPath: string): Promise<void> {
+        const config = ConfigManager.getServerConfig();
+        const validationError = this.validateServerConfig(config);
+
+        if (validationError) {
+            this.log('invalid server configuration', validationError);
+            vscode.window.showErrorMessage(validationError);
+            return;
+        }
+
+        const normalizedLocalPath = localPath.replace(/\\/g, '/');
+        const relativePath = this.extractRelativeAppsResPath(normalizedLocalPath);
+        const remoteBase = this.joinRemotePaths(config.projectPath, 'apps_res');
+        const remoteTarget = relativePath
+            ? this.joinRemotePaths(remoteBase, relativePath)
+            : remoteBase;
+
+        const sftp = new SftpClient();
+
+        this.log('connecting to server', `${config.host}:${config.port}`);
+
+        try {
+            await sftp.connect({
+                host: config.host,
+                port: config.port,
+                username: config.username,
+                password: config.password
+            });
+
+            const stat = await fs.stat(localPath);
+
+            if (stat.isDirectory()) {
+                await this.uploadDirectory(sftp, localPath, remoteTarget);
+            } else {
+                await this.ensureRemoteDir(sftp, path.posix.dirname(remoteTarget));
+                await sftp.fastPut(localPath, remoteTarget);
+                this.log('uploaded file', remoteTarget);
+            }
+
+            vscode.window.showInformationMessage(`已上传: ${remoteTarget}`);
+        } catch (error) {
+            this.log('upload failed', error);
+            vscode.window.showErrorMessage(`上传失败: ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+            try {
+                await sftp.end();
+            } catch (closeError) {
+                this.log('failed to close sftp connection', closeError);
+            }
+        }
     }
 
     private normalizeRemoteDir(remoteDir: string): string {
