@@ -3,6 +3,11 @@
   "displayName": "Yuxuan Dev Assistant",
   "description": "Yuxuan Dev Assistant — 面向 Java(V5) 开发的 VS Code 效率插件",
   "version": "0.0.2",
+  "publisher": "SirYuxuan",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SirYuxuan/vscode-plugin.git"
+  },
   "engines": {
     "vscode": "^1.104.0"
   },
