@@ -1,115 +1,313 @@
-import { exec } from 'child_process';
-import type { Stats } from 'fs';
-import { promises as fs } from 'fs';
-import * as path from 'path';
-import SftpClient from 'ssh2-sftp-client';
-import { promisify } from 'util';
-import * as vscode from 'vscode';
-import { ConfigManager, ServerConfig } from '../../core/config/configManager';
+/**
+ * 「上传 / 删除」功能模块。
+ *
+ * 负责把本地资源经 SFTP 同步到远程服务器，或从远程删除。按资源类别
+ * （Java 编译产物 / WEB-INF / apps_res）走不同映射规则，规则统一由
+ * {@link ResourceMapping} 提供，SFTP 连接由 {@link SftpService} 托管。
+ */
 
-const execAsync = promisify(exec);
+import { promises as fs } from 'fs';
+import type { Stats } from 'fs';
+import * as path from 'path';
+import * as vscode from 'vscode';
+import { CommandContribution } from '../../core/command';
+import { ConfigManager, ServerConfig } from '../../core/config/configManager';
+import { EXTENSION_ID, ResourceKind } from '../../core/constants';
+import { FsUtils } from '../../core/fsUtils';
+import { OperationHistory } from '../../core/history/operationHistory';
+import { Logger } from '../../core/logging/logger';
+import { PathResolver } from '../../core/paths/pathResolver';
+import { SftpService, SftpSession } from '../../core/sftp/sftpService';
+import { JavaLayout, ResourceMapping } from './resourceMapping';
+
+/** 校验并规范化后的操作目标。 */
+interface ResolvedTarget {
+    fsPath: string;
+    normalizedPath: string;
+    kind: ResourceKind;
+}
 
 /**
- * 处理资源管理器中的上传相关命令。
+ * upload / delete 命令的公共基类，收敛目标校验与配置校验等重复逻辑。
  */
-export class UploadCommands implements vscode.Disposable {
-    private static readonly WEB_INF_MARKER = '/src/main/webapp/WEB-INF/';
-    private static readonly APPS_RES_MARKER = '/src/main/webapp/apps_res/';
-    private static readonly SRC_JAVA_MARKER = '/src/main/java/';
+abstract class ResourceCommandBase {
+    protected readonly logger: Logger;
 
-    private readonly outputChannel: vscode.OutputChannel;
-
-    constructor() {
-        this.outputChannel = vscode.window.createOutputChannel('V5Dev Upload');
+    constructor(
+        protected readonly sftp: SftpService,
+        protected readonly history: OperationHistory,
+        logger: Logger,
+        scope: string
+    ) {
+        this.logger = logger.scoped(scope);
     }
 
     /**
-     * 触发上传流程。当前作为占位符，后续将补充具体实现。
+     * 校验右键选中的资源：存在、且落在受支持的目录范围内。
+     * 不合法时给出用户提示并返回 undefined。
      */
-    public async upload(target?: vscode.Uri): Promise<void> {
-        this.log('upload command triggered');
-
-        if (!target) {
-            this.log('no target provided');
-            vscode.window.showWarningMessage('请选择需要上传的资源。');
-            return;
+    protected resolveTarget(target?: vscode.Uri): ResolvedTarget | undefined {
+        if (!target?.fsPath) {
+            vscode.window.showWarningMessage('请选择需要操作的资源。');
+            return undefined;
         }
 
-        if (!target.fsPath) {
-            this.log('target missing fsPath', target.toString());
-            vscode.window.showWarningMessage('无法获取所选资源路径。');
-            return;
+        const normalizedPath = PathResolver.normalize(target.fsPath);
+        const kind = PathResolver.detectResourceKind(normalizedPath);
+
+        if (!kind) {
+            this.logger.debug('路径不在受支持范围', normalizedPath);
+            vscode.window.showWarningMessage('当前选择的路径不在受支持的操作范围内。');
+            return undefined;
         }
 
-        const normalizedPath = target.fsPath.replace(/\\/g, '/');
-        this.log('normalized target path', normalizedPath);
-
-        if (normalizedPath.includes(UploadCommands.WEB_INF_MARKER)) {
-            this.log('matched WEB-INF branch');
-            await this.uploadWebInfResource(target.fsPath);
-            return;
-        }
-
-        if (normalizedPath.includes(UploadCommands.APPS_RES_MARKER)) {
-            this.log('matched apps_res branch');
-            await this.uploadAppsResResource(target.fsPath);
-            return;
-        }
-
-        if (normalizedPath.includes(UploadCommands.SRC_JAVA_MARKER)) {
-            this.log('matched Java branch');
-            await this.uploadJavaResource(target.fsPath);
-            return;
-        }
-
-        this.log('path outside supported scope');
-        vscode.window.showWarningMessage('当前选择的路径不在支持的上传范围内。');
+        return { fsPath: target.fsPath, normalizedPath, kind };
     }
 
-    public async delete(target?: vscode.Uri): Promise<void> {
-        this.log('delete command triggered');
+    /** 读取并校验服务器配置；不可用时提示并返回 undefined。 */
+    protected getValidatedConfig(): ServerConfig | undefined {
+        const config = ConfigManager.getServerConfig();
+        const error = ConfigManager.validateServerConfig(config);
 
-        if (!target) {
-            this.log('no target provided for delete');
-            vscode.window.showWarningMessage('请选择需要删除的资源。');
+        if (error) {
+            this.logger.warn('服务器配置无效', error);
+            vscode.window.showErrorMessage(error);
+            return undefined;
+        }
+
+        return config;
+    }
+
+    /** 安全读取本地路径的 stat；失败时提示并返回 undefined。 */
+    protected async statLocal(fsPath: string): Promise<Stats | undefined> {
+        try {
+            return await fs.stat(fsPath);
+        } catch (error) {
+            this.logger.error('读取本地路径失败', error);
+            const message = error instanceof Error ? error.message : String(error);
+            vscode.window.showErrorMessage(`无法读取本地路径: ${message}`);
+            return undefined;
+        }
+    }
+}
+
+/**
+ * 「上传」命令。
+ */
+export class UploadCommand extends ResourceCommandBase implements CommandContribution {
+    public readonly id = `${EXTENSION_ID}.upload`;
+
+    constructor(sftp: SftpService, history: OperationHistory, logger: Logger) {
+        super(sftp, history, logger, 'Upload');
+    }
+
+    public async execute(target?: vscode.Uri): Promise<void> {
+        const resolved = this.resolveTarget(target);
+        if (!resolved) {
             return;
         }
 
-        if (!target.fsPath) {
-            this.log('target missing fsPath for delete', target.toString());
-            vscode.window.showWarningMessage('无法获取所选资源路径。');
+        const config = this.getValidatedConfig();
+        if (!config) {
             return;
         }
 
-        const normalizedPath = target.fsPath.replace(/\\/g, '/');
-        this.log('normalized target path for delete', normalizedPath);
-
-        let deleteBranch: 'webInf' | 'appsRes' | 'java' | undefined;
-
-        if (normalizedPath.includes(UploadCommands.WEB_INF_MARKER)) {
-            deleteBranch = 'webInf';
-        } else if (normalizedPath.includes(UploadCommands.APPS_RES_MARKER)) {
-            deleteBranch = 'appsRes';
-        } else if (normalizedPath.includes(UploadCommands.SRC_JAVA_MARKER)) {
-            deleteBranch = 'java';
-        }
-
-        if (!deleteBranch) {
-            this.log('delete path outside supported scope');
-            vscode.window.showWarningMessage('当前选择的路径不在支持的删除范围内。');
+        const stat = await this.statLocal(resolved.fsPath);
+        if (!stat) {
             return;
         }
-
-        let stat: Stats;
 
         try {
-            stat = await fs.stat(target.fsPath);
+            await this.sftp.withSession(config, async (session) => {
+                if (resolved.kind === 'java') {
+                    await this.uploadJava(session, config, resolved, stat);
+                } else {
+                    await this.uploadPlain(session, config, resolved, stat);
+                }
+            });
+
+            await this.history.record('upload', resolved.fsPath);
         } catch (error) {
-            this.log('failed to stat target for delete', error);
-            vscode.window.showErrorMessage(`无法读取本地路径: ${error instanceof Error ? error.message : String(error)}`);
+            this.logger.error('上传失败', error);
+            const message = error instanceof Error ? error.message : String(error);
+            vscode.window.showErrorMessage(`上传失败: ${message}`);
+        }
+    }
+
+    /** 上传 WEB-INF / apps_res 资源（原样上传）。 */
+    private async uploadPlain(
+        session: SftpSession,
+        config: ServerConfig,
+        resolved: ResolvedTarget,
+        stat: Stats
+    ): Promise<void> {
+        const { remoteTarget } = ResourceMapping.plainTarget(
+            config.projectPath,
+            resolved.normalizedPath,
+            resolved.kind as 'webInf' | 'appsRes'
+        );
+
+        if (stat.isDirectory()) {
+            await session.putDirectory(resolved.fsPath, remoteTarget);
+        } else {
+            await session.putFile(resolved.fsPath, remoteTarget);
+        }
+
+        vscode.window.showInformationMessage(`已上传: ${remoteTarget}`);
+    }
+
+    /** 上传 Java 资源：实际上传的是 `target/classes` 下的编译产物。 */
+    private async uploadJava(
+        session: SftpSession,
+        config: ServerConfig,
+        resolved: ResolvedTarget,
+        stat: Stats
+    ): Promise<void> {
+        const layout = ResourceMapping.javaLayout(config.projectPath, resolved.normalizedPath);
+
+        if (!layout) {
+            vscode.window.showErrorMessage('无法识别所选 Java 源文件所属的工程结构。');
             return;
         }
 
+        if (!(await FsUtils.pathExists(layout.buildOutput))) {
+            vscode.window.showWarningMessage('未找到编译输出目录 target/classes，请先执行构建。');
+            return;
+        }
+
+        if (stat.isDirectory()) {
+            await this.uploadJavaDirectory(session, layout);
+            return;
+        }
+
+        if (stat.isFile()) {
+            await this.uploadJavaFile(session, resolved, layout);
+            return;
+        }
+
+        vscode.window.showWarningMessage('仅支持上传 Java 文件或目录。');
+    }
+
+    /** 上传整个 Java 包目录对应的编译产物目录。 */
+    private async uploadJavaDirectory(session: SftpSession, layout: JavaLayout): Promise<void> {
+        const compiledDir = path.join(layout.buildOutput, PathResolver.toFsPath(layout.relativeJavaPath));
+
+        if (!(await FsUtils.pathExists(compiledDir))) {
+            vscode.window.showWarningMessage('未找到对应的编译输出，请先执行构建。');
+            return;
+        }
+
+        const remoteTarget = PathResolver.joinRemote(layout.remoteClassesBase, layout.relativeJavaPath);
+        await session.putDirectory(compiledDir, remoteTarget);
+        vscode.window.showInformationMessage(`已上传: ${remoteTarget}`);
+    }
+
+    /** 上传单个 Java 源文件对应的 class 文件（含内部类）。 */
+    private async uploadJavaFile(
+        session: SftpSession,
+        resolved: ResolvedTarget,
+        layout: JavaLayout
+    ): Promise<void> {
+        if (path.extname(resolved.fsPath) !== '.java') {
+            vscode.window.showWarningMessage('仅支持上传 Java 源文件。');
+            return;
+        }
+
+        const relativeDir = this.classRelativeDir(layout.relativeJavaPath);
+        const compiledDir = relativeDir
+            ? path.join(layout.buildOutput, PathResolver.toFsPath(relativeDir))
+            : layout.buildOutput;
+
+        if (!(await FsUtils.pathExists(compiledDir))) {
+            vscode.window.showWarningMessage('未找到对应的编译输出，请先执行构建。');
+            return;
+        }
+
+        const classBaseName = path.basename(layout.relativeJavaPath, '.java');
+        const classFiles = await FsUtils.collectClassFiles(compiledDir, classBaseName);
+
+        if (classFiles.length === 0) {
+            vscode.window.showWarningMessage('未找到对应的 class 文件，请确认项目已编译。');
+            return;
+        }
+
+        const remoteDir = relativeDir
+            ? PathResolver.joinRemote(layout.remoteClassesBase, relativeDir)
+            : layout.remoteClassesBase;
+
+        await session.ensureDir(remoteDir);
+
+        for (const file of classFiles) {
+            await session.putFile(path.join(compiledDir, file), PathResolver.joinRemote(remoteDir, file));
+        }
+
+        vscode.window.showInformationMessage(`已上传类文件: ${classFiles.join(', ')}`);
+    }
+
+    /** 计算 class 文件所在的相对目录（去掉 `.` 表示的根目录）。 */
+    private classRelativeDir(relativeJavaPath: string): string {
+        const dir = path.posix.dirname(relativeJavaPath);
+        return dir === '.' ? '' : dir;
+    }
+}
+
+/**
+ * 「删除」命令，上传的逆操作。删除远程资源，并可选同时删除本地文件。
+ */
+export class DeleteCommand extends ResourceCommandBase implements CommandContribution {
+    public readonly id = `${EXTENSION_ID}.delete`;
+
+    constructor(sftp: SftpService, history: OperationHistory, logger: Logger) {
+        super(sftp, history, logger, 'Delete');
+    }
+
+    public async execute(target?: vscode.Uri): Promise<void> {
+        const resolved = this.resolveTarget(target);
+        if (!resolved) {
+            return;
+        }
+
+        const stat = await this.statLocal(resolved.fsPath);
+        if (!stat) {
+            return;
+        }
+
+        const removeLocal = await this.confirmRemoveLocal();
+        if (removeLocal === undefined) {
+            this.logger.debug('用户取消删除');
+            return;
+        }
+
+        const config = this.getValidatedConfig();
+        if (!config) {
+            return;
+        }
+
+        try {
+            await this.sftp.withSession(config, async (session) => {
+                if (resolved.kind === 'java') {
+                    await this.deleteJava(session, config, resolved, stat);
+                } else {
+                    await this.deletePlain(session, config, resolved);
+                }
+            });
+
+            await this.history.record('delete', resolved.fsPath);
+            vscode.window.showInformationMessage('远程资源删除完成。');
+
+            if (removeLocal) {
+                await this.removeLocalPath(resolved.fsPath, stat.isDirectory());
+                vscode.window.showInformationMessage('本地资源已删除。');
+            }
+        } catch (error) {
+            this.logger.error('删除失败', error);
+            const message = error instanceof Error ? error.message : String(error);
+            vscode.window.showErrorMessage(`删除失败: ${message}`);
+        }
+    }
+
+    /** 弹出模态框询问是否同时删除本地文件。返回 undefined 表示用户取消。 */
+    private async confirmRemoveLocal(): Promise<boolean | undefined> {
         const choice = await vscode.window.showInformationMessage(
             '是否同时删除本地文件？',
             { modal: true },
@@ -118,828 +316,94 @@ export class UploadCommands implements vscode.Disposable {
         );
 
         if (!choice) {
-            this.log('delete cancelled by user');
-            return;
+            return undefined;
         }
 
-        const removeLocal = choice === '是';
-
-        const config = ConfigManager.getServerConfig();
-        const validationError = this.validateServerConfig(config);
-
-        if (validationError) {
-            this.log('invalid server configuration for delete', validationError);
-            vscode.window.showErrorMessage(validationError);
-            return;
-        }
-
-        const sftp = new SftpClient();
-
-        try {
-            await sftp.connect({
-                host: config.host,
-                port: config.port,
-                username: config.username,
-                password: config.password
-            });
-
-            if (deleteBranch === 'webInf') {
-                await this.deleteWebInfResource(sftp, normalizedPath);
-            } else if (deleteBranch === 'appsRes') {
-                await this.deleteAppsResResource(sftp, normalizedPath);
-            } else {
-                await this.deleteJavaResource(sftp, normalizedPath, stat);
-            }
-
-            vscode.window.showInformationMessage('远程资源删除完成。');
-
-            if (removeLocal) {
-                await this.removeLocalPath(target.fsPath, stat.isDirectory());
-                vscode.window.showInformationMessage('本地资源已删除。');
-            }
-        } catch (error) {
-            this.log('delete failed', error);
-            vscode.window.showErrorMessage(`删除失败: ${error instanceof Error ? error.message : String(error)}`);
-        } finally {
-            try {
-                await sftp.end();
-            } catch (closeError) {
-                this.log('failed to close sftp connection after delete', closeError);
-            }
-        }
+        return choice === '是';
     }
 
-    public dispose(): void {
-        this.outputChannel.dispose();
+    /** 删除 WEB-INF / apps_res 远程资源。 */
+    private async deletePlain(session: SftpSession, config: ServerConfig, resolved: ResolvedTarget): Promise<void> {
+        const { remoteTarget } = ResourceMapping.plainTarget(
+            config.projectPath,
+            resolved.normalizedPath,
+            resolved.kind as 'webInf' | 'appsRes'
+        );
+
+        this.logger.debug('删除远程资源', remoteTarget);
+        await session.remove(remoteTarget);
     }
 
-    public async findClass(target?: vscode.Uri): Promise<void> {
-        this.log('find class command triggered');
+    /** 删除 Java 源文件对应的远程 class 文件 / 目录。 */
+    private async deleteJava(
+        session: SftpSession,
+        config: ServerConfig,
+        resolved: ResolvedTarget,
+        stat: Stats
+    ): Promise<void> {
+        const layout = ResourceMapping.javaLayout(config.projectPath, resolved.normalizedPath);
 
-        if (!target) {
-            this.log('no target provided for find class');
-            vscode.window.showWarningMessage('请选择需要查找的 Java 文件。');
+        if (!layout) {
+            vscode.window.showErrorMessage('无法识别所选 Java 源文件所属的工程结构。');
             return;
         }
-
-        if (!target.fsPath) {
-            this.log('target missing fsPath for find class', target.toString());
-            vscode.window.showWarningMessage('无法获取所选资源路径。');
-            return;
-        }
-
-        const normalizedPath = target.fsPath.replace(/\\/g, '/');
-        this.log('normalized target path for find class', normalizedPath);
-
-        if (!normalizedPath.endsWith('.java')) {
-            this.log('target is not a java file');
-            vscode.window.showWarningMessage('请选择 Java 源文件。');
-            return;
-        }
-
-        if (!normalizedPath.includes(UploadCommands.SRC_JAVA_MARKER)) {
-            this.log('java file outside src/main/java structure');
-            vscode.window.showWarningMessage('Java 文件不在 src/main/java 目录结构中。');
-            return;
-        }
-
-        const projectRoot = this.extractJavaProjectRoot(normalizedPath);
-
-        if (!projectRoot) {
-            this.log('unable to determine project root for find class', normalizedPath);
-            vscode.window.showErrorMessage('无法识别所选 Java 源文件所属的项目根目录。');
-            return;
-        }
-
-        const relativeJavaPath = this.extractRelativeJavaPath(normalizedPath);
-
-        if (!relativeJavaPath) {
-            this.log('unable to resolve relative java path for find class', normalizedPath);
-            vscode.window.showWarningMessage('无法解析所选 Java 源文件的相对路径。');
-            return;
-        }
-
-        const targetClassesRoot = path.join(projectRoot, 'target', 'classes');
-
-        if (!(await this.pathExists(targetClassesRoot))) {
-            this.log('target/classes directory missing for find class', targetClassesRoot);
-            vscode.window.showWarningMessage('未找到编译输出目录 target/classes，请先执行构建。');
-            return;
-        }
-
-        let relativeDir = path.posix.dirname(relativeJavaPath);
-
-        if (relativeDir === '.') {
-            relativeDir = '';
-        }
-
-        const compiledDir = relativeDir
-            ? path.join(targetClassesRoot, this.toFsPath(relativeDir))
-            : targetClassesRoot;
-
-        if (!(await this.pathExists(compiledDir))) {
-            this.log('compiled directory not found for find class', compiledDir);
-            vscode.window.showWarningMessage('未找到对应的编译输出目录，请先执行构建。');
-            return;
-        }
-
-        const classBaseName = path.basename(relativeJavaPath, '.java');
-        const classFiles = await this.collectClassFiles(compiledDir, classBaseName);
-
-        if (classFiles.length === 0) {
-            this.log('no class files found for java source', {
-                compiledDir,
-                classBaseName
-            });
-            vscode.window.showWarningMessage('未找到对应的 class 文件，请确认项目已编译。');
-            return;
-        }
-
-        this.log('found class files', classFiles);
-        this.log('compiled directory', compiledDir);
-
-        if (classFiles.length === 1) {
-            const classPath = path.join(compiledDir, classFiles[0]);
-            this.log('final class path to reveal', classPath);
-            await this.revealClassFile(classPath);
-            return;
-        }
-
-        const selectedFile = await vscode.window.showQuickPick(classFiles, {
-            placeHolder: `找到 ${classFiles.length} 个 class 文件，请选择一个：`
-        });
-
-        if (selectedFile) {
-            const classPath = path.join(compiledDir, selectedFile);
-            this.log('final class path to reveal (multiple)', classPath);
-            await this.revealClassFile(classPath);
-        }
-    }
-
-    private async uploadWebInfResource(localPath: string): Promise<void> {
-        const config = ConfigManager.getServerConfig();
-        const validationError = this.validateServerConfig(config);
-
-        if (validationError) {
-            this.log('invalid server configuration', validationError);
-            vscode.window.showErrorMessage(validationError);
-            return;
-        }
-
-        const normalizedLocalPath = localPath.replace(/\\/g, '/');
-        const relativePath = this.extractRelativeWebInfPath(normalizedLocalPath);
-        const remoteBase = this.joinRemotePaths(config.projectPath, 'WEB-INF');
-        const remoteTarget = relativePath
-            ? this.joinRemotePaths(remoteBase, relativePath)
-            : remoteBase;
-
-        const sftp = new SftpClient();
-
-        this.log('connecting to server', `${config.host}:${config.port}`);
-
-        try {
-            await sftp.connect({
-                host: config.host,
-                port: config.port,
-                username: config.username,
-                password: config.password
-            });
-
-            const stat = await fs.stat(localPath);
-
-            if (stat.isDirectory()) {
-                await this.uploadDirectory(sftp, localPath, remoteTarget);
-            } else {
-                await this.ensureRemoteDir(sftp, path.posix.dirname(remoteTarget));
-                await sftp.fastPut(localPath, remoteTarget);
-                this.log('uploaded file', remoteTarget);
-            }
-
-            vscode.window.showInformationMessage(`已上传: ${remoteTarget}`);
-        } catch (error) {
-            this.log('upload failed', error);
-            vscode.window.showErrorMessage(`上传失败: ${error instanceof Error ? error.message : String(error)}`);
-        } finally {
-            try {
-                await sftp.end();
-            } catch (closeError) {
-                this.log('failed to close sftp connection', closeError);
-            }
-        }
-    }
-
-    private async deleteWebInfResource(client: SftpClient, normalizedLocalPath: string): Promise<void> {
-        const config = ConfigManager.getServerConfig();
-        const relativePath = this.extractRelativeWebInfPath(normalizedLocalPath);
-        const remoteBase = this.joinRemotePaths(config.projectPath, 'WEB-INF');
-        const remoteTarget = relativePath
-            ? this.joinRemotePaths(remoteBase, relativePath)
-            : remoteBase;
-
-        this.log('deleting WEB-INF resource', remoteTarget);
-        await this.removeRemotePath(client, remoteTarget);
-    }
-
-    private async deleteAppsResResource(client: SftpClient, normalizedLocalPath: string): Promise<void> {
-        const config = ConfigManager.getServerConfig();
-        const relativePath = this.extractRelativeAppsResPath(normalizedLocalPath);
-        const remoteBase = this.joinRemotePaths(config.projectPath, 'apps_res');
-        const remoteTarget = relativePath
-            ? this.joinRemotePaths(remoteBase, relativePath)
-            : remoteBase;
-
-        this.log('deleting apps_res resource', remoteTarget);
-        await this.removeRemotePath(client, remoteTarget);
-    }
-
-    private async deleteJavaResource(client: SftpClient, normalizedLocalPath: string, stat: Stats): Promise<void> {
-        const config = ConfigManager.getServerConfig();
-        const projectRoot = this.extractJavaProjectRoot(normalizedLocalPath);
-
-        if (!projectRoot) {
-            this.log('unable to determine project root for delete', normalizedLocalPath);
-            vscode.window.showErrorMessage('无法识别所选 Java 源文件所属的项目根目录。');
-            return;
-        }
-
-        const relativeJavaPath = this.extractRelativeJavaPath(normalizedLocalPath);
-
-        if (!relativeJavaPath) {
-            this.log('unable to resolve relative java path for delete', normalizedLocalPath);
-            vscode.window.showWarningMessage('无法解析所选 Java 源文件的相对路径。');
-            return;
-        }
-
-        const remoteBase = this.joinRemotePaths(config.projectPath, 'WEB-INF', 'classes');
 
         if (stat.isDirectory()) {
-            const remoteTarget = relativeJavaPath
-                ? this.joinRemotePaths(remoteBase, relativeJavaPath)
-                : remoteBase;
-
-            this.log('deleting Java directory', remoteTarget);
-            await this.removeRemotePath(client, remoteTarget);
+            const remoteTarget = PathResolver.joinRemote(layout.remoteClassesBase, layout.relativeJavaPath);
+            this.logger.debug('删除 Java 目录', remoteTarget);
+            await session.remove(remoteTarget);
             return;
         }
 
-        const ext = path.extname(normalizedLocalPath);
-
-        if (ext !== '.java') {
-            this.log('unsupported file type for java delete', ext);
+        if (path.extname(resolved.normalizedPath) !== '.java') {
             vscode.window.showWarningMessage('仅支持删除 Java 源文件。');
             return;
         }
 
-        let relativeDir = path.posix.dirname(relativeJavaPath);
-
-        if (relativeDir === '.') {
-            relativeDir = '';
-        }
-
-        const targetClassesRoot = path.join(projectRoot, 'target', 'classes');
+        const relativeDir = this.classRelativeDir(layout.relativeJavaPath);
         const compiledDir = relativeDir
-            ? path.join(targetClassesRoot, this.toFsPath(relativeDir))
-            : targetClassesRoot;
-
-        const classBaseName = path.basename(relativeJavaPath, '.java');
-
-        let classFiles: string[] = [];
-
-        if (await this.pathExists(compiledDir)) {
-            classFiles = await this.collectClassFiles(compiledDir, classBaseName);
-        }
-
+            ? path.join(layout.buildOutput, PathResolver.toFsPath(relativeDir))
+            : layout.buildOutput;
+        const classBaseName = path.basename(layout.relativeJavaPath, '.java');
         const remoteDir = relativeDir
-            ? this.joinRemotePaths(remoteBase, relativeDir)
-            : remoteBase;
+            ? PathResolver.joinRemote(layout.remoteClassesBase, relativeDir)
+            : layout.remoteClassesBase;
+
+        // 优先用本地编译产物确定要删除的 class 列表；本地没有时回退到远程目录列举。
+        let classFiles = await FsUtils.collectClassFiles(compiledDir, classBaseName);
 
         if (classFiles.length === 0) {
-            this.log('no local class files found, checking remote directory', remoteDir);
-            classFiles = await this.collectRemoteClassFiles(client, remoteDir, classBaseName);
+            this.logger.debug('本地无 class 文件，改为列举远程目录', remoteDir);
+            classFiles = await session.listClassFiles(remoteDir, classBaseName);
         }
 
         if (classFiles.length === 0) {
-            this.log('no class files to delete for java source', {
-                remoteDir,
-                classBaseName
-            });
             vscode.window.showWarningMessage('未找到需要删除的 class 文件。');
             return;
         }
 
         for (const file of classFiles) {
-            const remoteClassPath = this.joinRemotePaths(remoteDir, file);
-            await this.removeRemotePath(client, remoteClassPath);
+            await session.remove(PathResolver.joinRemote(remoteDir, file));
         }
 
-        this.log('deleted class files for java source', classFiles);
+        this.logger.debug('已删除 class 文件', classFiles);
     }
 
-    private async uploadJavaResource(localPath: string): Promise<void> {
-        const config = ConfigManager.getServerConfig();
-        const validationError = this.validateServerConfig(config);
-
-        if (validationError) {
-            this.log('invalid server configuration', validationError);
-            vscode.window.showErrorMessage(validationError);
-            return;
-        }
-
-        const normalizedLocalPath = localPath.replace(/\\/g, '/');
-        const projectRoot = this.extractJavaProjectRoot(normalizedLocalPath);
-
-        if (!projectRoot) {
-            this.log('unable to determine project root', normalizedLocalPath);
-            vscode.window.showErrorMessage('无法识别所选 Java 源文件所属的项目根目录。');
-            return;
-        }
-
-        const relativeJavaPath = this.extractRelativeJavaPath(normalizedLocalPath);
-
-        if (!relativeJavaPath) {
-            this.log('unable to resolve relative java path', normalizedLocalPath);
-            vscode.window.showWarningMessage('无法解析所选 Java 源文件的相对路径。');
-            return;
-        }
-
-        let stat: Stats;
-
-        try {
-            stat = await fs.stat(localPath);
-        } catch (error) {
-            this.log('failed to stat local path', error);
-            vscode.window.showErrorMessage(`无法读取本地路径: ${error instanceof Error ? error.message : String(error)}`);
-            return;
-        }
-
-        const targetClassesRoot = path.join(projectRoot, 'target', 'classes');
-
-        if (!(await this.pathExists(targetClassesRoot))) {
-            this.log('target/classes directory missing', targetClassesRoot);
-            vscode.window.showWarningMessage('未找到编译输出目录 target/classes，请先执行构建。');
-            return;
-        }
-
-        const remoteBase = this.joinRemotePaths(config.projectPath, 'WEB-INF', 'classes');
-        const sftp = new SftpClient();
-
-        this.log('connecting to server for java upload', `${config.host}:${config.port}`);
-
-        try {
-            await sftp.connect({
-                host: config.host,
-                port: config.port,
-                username: config.username,
-                password: config.password
-            });
-
-            if (stat.isDirectory()) {
-                const compiledDir = path.join(targetClassesRoot, this.toFsPath(relativeJavaPath));
-
-                if (!(await this.pathExists(compiledDir))) {
-                    this.log('compiled directory not found', compiledDir);
-                    vscode.window.showWarningMessage('未找到对应的编译输出，请先执行构建。');
-                    return;
-                }
-
-                const remoteTarget = relativeJavaPath
-                    ? this.joinRemotePaths(remoteBase, relativeJavaPath)
-                    : remoteBase;
-
-                await this.uploadDirectory(sftp, compiledDir, remoteTarget);
-                vscode.window.showInformationMessage(`已上传: ${remoteTarget}`);
-                return;
-            }
-
-            if (stat.isFile()) {
-                const ext = path.extname(localPath);
-
-                if (ext !== '.java') {
-                    this.log('unsupported file type for java upload', ext);
-                    vscode.window.showWarningMessage('仅支持上传 Java 源文件。');
-                    return;
-                }
-
-                let relativeDir = path.posix.dirname(relativeJavaPath);
-
-                if (relativeDir === '.') {
-                    relativeDir = '';
-                }
-
-                const compiledDir = relativeDir
-                    ? path.join(targetClassesRoot, this.toFsPath(relativeDir))
-                    : targetClassesRoot;
-
-                if (!(await this.pathExists(compiledDir))) {
-                    this.log('compiled directory for file not found', compiledDir);
-                    vscode.window.showWarningMessage('未找到对应的编译输出，请先执行构建。');
-                    return;
-                }
-
-                const classBaseName = path.basename(relativeJavaPath, '.java');
-                const classFiles = await this.collectClassFiles(compiledDir, classBaseName);
-
-                if (classFiles.length === 0) {
-                    this.log('no class files found for java source', {
-                        compiledDir,
-                        classBaseName
-                    });
-                    vscode.window.showWarningMessage('未找到对应的 class 文件，请确认项目已编译。');
-                    return;
-                }
-
-                const remoteDir = relativeDir
-                    ? this.joinRemotePaths(remoteBase, relativeDir)
-                    : remoteBase;
-
-                await this.ensureRemoteDir(sftp, remoteDir);
-
-                for (const file of classFiles) {
-                    const localClassPath = path.join(compiledDir, file);
-                    const remoteClassPath = this.joinRemotePaths(remoteDir, file);
-                    await sftp.fastPut(localClassPath, remoteClassPath);
-                    this.log('uploaded class file', remoteClassPath);
-                }
-
-                vscode.window.showInformationMessage(`已上传类文件: ${classFiles.join(', ')}`);
-                return;
-            }
-
-            this.log('unsupported fs entry for java upload');
-            vscode.window.showWarningMessage('仅支持上传 Java 文件或目录。');
-        } catch (error) {
-            this.log('upload failed', error);
-            vscode.window.showErrorMessage(`上传失败: ${error instanceof Error ? error.message : String(error)}`);
-        } finally {
-            try {
-                await sftp.end();
-            } catch (closeError) {
-                this.log('failed to close sftp connection', closeError);
-            }
-        }
+    /** 计算 class 文件所在的相对目录（去掉 `.` 表示的根目录）。 */
+    private classRelativeDir(relativeJavaPath: string): string {
+        const dir = path.posix.dirname(relativeJavaPath);
+        return dir === '.' ? '' : dir;
     }
 
-    private extractRelativeJavaPath(normalizedLocalPath: string): string | undefined {
-        const index = normalizedLocalPath.indexOf(UploadCommands.SRC_JAVA_MARKER);
-
-        if (index === -1) {
-            return undefined;
-        }
-
-        const relative = normalizedLocalPath.substring(index + UploadCommands.SRC_JAVA_MARKER.length);
-
-        return relative.replace(/^\/+/, '');
-    }
-
-    private extractJavaProjectRoot(normalizedLocalPath: string): string | undefined {
-        const index = normalizedLocalPath.indexOf(UploadCommands.SRC_JAVA_MARKER);
-
-        if (index === -1) {
-            return undefined;
-        }
-
-        const root = normalizedLocalPath.substring(0, index);
-
-        return path.normalize(root);
-    }
-
-    private toFsPath(posixPath: string): string {
-        if (!posixPath) {
-            return '';
-        }
-
-        return posixPath.split('/').join(path.sep);
-    }
-
-    private async pathExists(fsPath: string): Promise<boolean> {
-        try {
-            await fs.access(fsPath);
-            return true;
-        } catch {
-            return false;
-        }
-    }
-
-    private async collectClassFiles(dir: string, baseName: string): Promise<string[]> {
-        try {
-            const entries = await fs.readdir(dir);
-            const pattern = new RegExp(`^${this.escapeRegExp(baseName)}(\\$.*)?\\.class$`);
-
-            return entries.filter((entry) => pattern.test(entry));
-        } catch (error) {
-            this.log('failed to list class files', {
-                dir,
-                error: error instanceof Error ? error.message : String(error)
-            });
-
-            return [];
-        }
-    }
-
-    private async collectRemoteClassFiles(client: SftpClient, remoteDir: string, baseName: string): Promise<string[]> {
-        try {
-            const exists = await client.exists(remoteDir);
-
-            if (!exists) {
-                this.log('remote directory not found for class files', remoteDir);
-                return [];
-            }
-
-            if (exists !== 'd') {
-                this.log('remote path is not directory for class files', remoteDir);
-                return [];
-            }
-
-            const entries = await client.list(remoteDir);
-            const pattern = new RegExp(`^${this.escapeRegExp(baseName)}(\\$.*)?\\.class$`);
-
-            return entries.filter((entry) => pattern.test(entry.name)).map((entry) => entry.name);
-        } catch (error) {
-            this.log('failed to list remote class files', {
-                remoteDir,
-                error: error instanceof Error ? error.message : String(error)
-            });
-
-            return [];
-        }
-    }
-
-    private escapeRegExp(value: string): string {
-        return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    }
-
-    private async uploadDirectory(client: SftpClient, localDir: string, remoteDir: string): Promise<void> {
-        this.log('upload directory', `${localDir} -> ${remoteDir}`);
-
-        await this.ensureRemoteDir(client, remoteDir);
-
-        const entries = await fs.readdir(localDir, { withFileTypes: true });
-
-        for (const entry of entries) {
-            const localEntryPath = path.join(localDir, entry.name);
-            const remoteEntryPath = this.joinRemotePaths(remoteDir, entry.name);
-
-            if (entry.isDirectory()) {
-                await this.uploadDirectory(client, localEntryPath, remoteEntryPath);
-            } else if (entry.isFile()) {
-                await this.ensureRemoteDir(client, path.posix.dirname(remoteEntryPath));
-                await client.fastPut(localEntryPath, remoteEntryPath);
-                this.log('uploaded file', remoteEntryPath);
-            }
-        }
-    }
-
-    private async ensureRemoteDir(client: SftpClient, remoteDir: string): Promise<void> {
-        const normalized = this.normalizeRemoteDir(remoteDir);
-
-        if (!normalized) {
-            return;
-        }
-
-        const exists = await client.exists(normalized);
-
-        if (exists === 'd') {
-            return;
-        }
-
-        this.log('creating remote directory', normalized);
-        await client.mkdir(normalized, true);
-    }
-
-    private extractRelativeWebInfPath(normalizedLocalPath: string): string {
-        const index = normalizedLocalPath.indexOf(UploadCommands.WEB_INF_MARKER);
-
-        if (index === -1) {
-            return '';
-        }
-
-        const relative = normalizedLocalPath.substring(index + UploadCommands.WEB_INF_MARKER.length);
-
-        return relative.replace(/^\/+/, '');
-    }
-
-    private extractRelativeAppsResPath(normalizedLocalPath: string): string {
-        const index = normalizedLocalPath.indexOf(UploadCommands.APPS_RES_MARKER);
-
-        if (index === -1) {
-            return '';
-        }
-
-        const relative = normalizedLocalPath.substring(index + UploadCommands.APPS_RES_MARKER.length);
-
-        return relative.replace(/^\/+/, '');
-    }
-
-    private async uploadAppsResResource(localPath: string): Promise<void> {
-        const config = ConfigManager.getServerConfig();
-        const validationError = this.validateServerConfig(config);
-
-        if (validationError) {
-            this.log('invalid server configuration', validationError);
-            vscode.window.showErrorMessage(validationError);
-            return;
-        }
-
-        const normalizedLocalPath = localPath.replace(/\\/g, '/');
-        const relativePath = this.extractRelativeAppsResPath(normalizedLocalPath);
-        const remoteBase = this.joinRemotePaths(config.projectPath, 'apps_res');
-        const remoteTarget = relativePath
-            ? this.joinRemotePaths(remoteBase, relativePath)
-            : remoteBase;
-
-        const sftp = new SftpClient();
-
-        this.log('connecting to server', `${config.host}:${config.port}`);
-
-        try {
-            await sftp.connect({
-                host: config.host,
-                port: config.port,
-                username: config.username,
-                password: config.password
-            });
-
-            const stat = await fs.stat(localPath);
-
-            if (stat.isDirectory()) {
-                await this.uploadDirectory(sftp, localPath, remoteTarget);
-            } else {
-                await this.ensureRemoteDir(sftp, path.posix.dirname(remoteTarget));
-                await sftp.fastPut(localPath, remoteTarget);
-                this.log('uploaded file', remoteTarget);
-            }
-
-            vscode.window.showInformationMessage(`已上传: ${remoteTarget}`);
-        } catch (error) {
-            this.log('upload failed', error);
-            vscode.window.showErrorMessage(`上传失败: ${error instanceof Error ? error.message : String(error)}`);
-        } finally {
-            try {
-                await sftp.end();
-            } catch (closeError) {
-                this.log('failed to close sftp connection', closeError);
-            }
-        }
-    }
-
-    private normalizeRemoteDir(remoteDir: string): string {
-        if (!remoteDir || remoteDir === '.' || remoteDir === '/') {
-            return '';
-        }
-
-        const withoutBackslash = remoteDir.replace(/\\/g, '/');
-
-        return withoutBackslash.replace(/\/+$/, '');
-    }
-
-    private joinRemotePaths(base: string, ...segments: string[]): string {
-        const normalizedBase = this.normalizeRemoteRoot(base);
-        const cleanedSegments = segments
-            .filter((segment) => segment && segment.length > 0)
-            .map((segment) => segment.replace(/\\/g, '/'));
-
-        return path.posix.join(normalizedBase, ...cleanedSegments);
-    }
-
-    private normalizeRemoteRoot(root: string): string {
-        if (!root) {
-            return '/';
-        }
-
-        const replaced = root.replace(/\\/g, '/').replace(/\/+$/, '');
-
-        if (replaced.length === 0) {
-            return '/';
-        }
-
-        return replaced.startsWith('/') ? replaced : `/${replaced}`;
-    }
-
-    private validateServerConfig(config: ServerConfig): string | undefined {
-        if (!config.host) {
-            return '请先在设置中配置服务器主机地址。';
-        }
-
-        if (!config.username) {
-            return '请先在设置中配置服务器登录账号。';
-        }
-
-        if (!config.password) {
-            return '请先在设置中配置服务器登录密码。';
-        }
-
-        if (!config.projectPath) {
-            return '请先在设置中配置服务器项目路径。';
-        }
-
-        return undefined;
-    }
-
-    private async removeRemotePath(client: SftpClient, remotePath: string): Promise<void> {
-        if (!remotePath || remotePath === '/') {
-            this.log('refusing to remove remote root path', remotePath);
-            return;
-        }
-
-        const exists = await client.exists(remotePath);
-
-        if (!exists) {
-            this.log('remote path does not exist', remotePath);
-            return;
-        }
-
-        if (exists === 'd') {
-            const entries = await client.list(remotePath);
-
-            for (const entry of entries) {
-                const childPath = this.joinRemotePaths(remotePath, entry.name);
-
-                if (entry.type === 'd') {
-                    await this.removeRemotePath(client, childPath);
-                } else {
-                    await client.delete(childPath);
-                    this.log('deleted remote file', childPath);
-                }
-            }
-
-            await client.rmdir(remotePath);
-            this.log('removed remote directory', remotePath);
-            return;
-        }
-
-        await client.delete(remotePath);
-        this.log('deleted remote file', remotePath);
-    }
-
+    /** 删除本地文件或目录。 */
     private async removeLocalPath(localPath: string, isDirectory: boolean): Promise<void> {
         try {
             await fs.rm(localPath, { recursive: isDirectory, force: true });
-            this.log('deleted local path', localPath);
+            this.logger.debug('已删除本地路径', localPath);
         } catch (error) {
-            this.log('failed to delete local path', error);
-            vscode.window.showErrorMessage(`删除本地文件失败: ${error instanceof Error ? error.message : String(error)}`);
-        }
-    }
-
-    private async revealClassFile(classPath: string): Promise<void> {
-        try {
-            // 先检查文件是否存在
-            if (!(await this.pathExists(classPath))) {
-                this.log('class file does not exist', classPath);
-                vscode.window.showErrorMessage(`class 文件不存在: ${classPath}`);
-                return;
-            }
-
-            this.log('attempting to reveal class file in OS', classPath);
-
-            // 根据操作系统使用不同的命令打开文件管理器
-            const platform = process.platform;
-            let command: string;
-
-            if (platform === 'darwin') {
-                // macOS: 使用 open -R 命令在 Finder 中选中文件
-                command = `open -R "${classPath}"`;
-            } else if (platform === 'win32') {
-                // Windows: 使用 explorer /select 命令
-                command = `explorer /select,"${classPath.replace(/\//g, '\\')}"`;
-            } else {
-                // Linux: 尝试使用 xdg-open 打开文件所在目录
-                const dirPath = path.dirname(classPath);
-                command = `xdg-open "${dirPath}"`;
-            }
-
-            this.log('executing command', command);
-            await execAsync(command);
-            this.log('revealed class file in OS file manager', classPath);
-            vscode.window.showInformationMessage(`已在系统文件管理器中显示: ${path.basename(classPath)}`);
-        } catch (error) {
-            this.log('failed to reveal class file in OS', error);
-            vscode.window.showErrorMessage(`无法在文件管理器中显示文件: ${error instanceof Error ? error.message : String(error)}`);
-        }
-    }
-
-    private log(message: string, extra?: unknown): void {
-        const parts = ['[V5Dev]', message];
-        if (extra !== undefined) {
-            parts.push(this.formatExtra(extra));
-        }
-
-        this.outputChannel.appendLine(parts.join(' '));
-    }
-
-    private formatExtra(extra: unknown): string {
-        if (typeof extra === 'string') {
-            return extra;
-        }
-
-        if (extra instanceof Error) {
-            return `${extra.name}: ${extra.message}`;
-        }
-
-        try {
-            return JSON.stringify(extra);
-        } catch {
-            return String(extra);
+            this.logger.error('删除本地文件失败', error);
+            const message = error instanceof Error ? error.message : String(error);
+            vscode.window.showErrorMessage(`删除本地文件失败: ${message}`);
         }
     }
 }

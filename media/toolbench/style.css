@@ -1,0 +1,145 @@
+:root {
+    color-scheme: light dark;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
+    color: var(--vscode-foreground);
+    background: var(--vscode-editor-background);
+}
+
+#app {
+    display: flex;
+    height: 100vh;
+}
+
+#tool-nav {
+    width: 160px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--vscode-panel-border);
+    overflow-y: auto;
+    padding: 8px 0;
+}
+
+#tool-nav button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 8px 14px;
+    border: none;
+    background: transparent;
+    color: var(--vscode-foreground);
+    cursor: pointer;
+    font-size: 13px;
+}
+
+#tool-nav button:hover {
+    background: var(--vscode-list-hoverBackground);
+}
+
+#tool-nav button.active {
+    background: var(--vscode-list-activeSelectionBackground);
+    color: var(--vscode-list-activeSelectionForeground);
+}
+
+#tool-pane {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 16px;
+    overflow: hidden;
+}
+
+#tool-header {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 12px;
+}
+
+#tool-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.control {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+}
+
+.control label {
+    opacity: 0.85;
+}
+
+.control select,
+.control input {
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, transparent);
+    padding: 4px 6px;
+    border-radius: 3px;
+    font-family: var(--vscode-font-family);
+}
+
+#tool-io {
+    display: flex;
+    gap: 12px;
+    flex: 1;
+    min-height: 0;
+}
+
+#tool-input,
+#tool-output {
+    flex: 1;
+    width: 100%;
+    resize: none;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 13px;
+    line-height: 1.5;
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+    border-radius: 3px;
+    padding: 10px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+}
+
+#tool-output-wrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+#tool-output {
+    flex: 1;
+}
+
+#tool-output.error {
+    color: var(--vscode-errorForeground);
+    border-color: var(--vscode-errorForeground);
+}
+
+#tool-note {
+    font-size: 12px;
+    opacity: 0.8;
+    margin-bottom: 6px;
+    min-height: 16px;
+}
+
+.hidden {
+    display: none !important;
+}

@@ -1,31 +1,24 @@
 /**
- * YuxuanPlugin - VS Code扩展主入口
- * 提供Arthas工具集成和其他实用功能
+ * Yuxuan Dev Assistant —— VS Code 扩展主入口。
+ *
+ * 仅负责生命周期钩子；具体功能的装配与注册委托给 {@link CommandManager}。
  */
 
 import * as vscode from 'vscode';
 import { CommandManager } from './core/commandManager';
+import { Logger } from './core/logging/logger';
 
-/**
- * 扩展激活函数
- * 当扩展被激活时调用，负责初始化所有功能
- */
+/** 扩展激活：初始化命令管理器并注册全部功能。 */
 export function activate(context: vscode.ExtensionContext): void {
-	console.log('YuxuanPlugin 扩展已激活');
+    const logger = Logger.shared;
+    logger.info('Yuxuan Dev Assistant 扩展已激活');
 
-	// 初始化命令管理器
-	const commandManager = new CommandManager(context);
+    new CommandManager(context).registerAll();
 
-	// 注册所有命令
-	commandManager.registerAll();
-
-	console.log('YuxuanPlugin 所有功能已成功加载');
+    logger.info('Yuxuan Dev Assistant 所有功能已成功加载');
 }
 
-/**
- * 扩展停用函数
- * 当扩展被停用时调用，用于清理资源
- */
+/** 扩展停用：资源通过 context.subscriptions 自动释放，这里仅记录日志。 */
 export function deactivate(): void {
-	console.log('YuxuanPlugin 扩展已停用');
+    Logger.shared.info('Yuxuan Dev Assistant 扩展已停用');
 }
