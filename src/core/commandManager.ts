@@ -19,6 +19,7 @@ import { HttpCodeLensProvider } from '../features/http/httpCodeLensProvider';
 import { HttpEnvironment } from '../features/http/httpEnvironment';
 import { SelectEnvironmentCommand } from '../features/http/selectEnvironmentCommand';
 import { SendRequestCommand } from '../features/http/sendRequestCommand';
+import { registerLlmFeature } from '../features/llm/llmFeature';
 import { OpenToolbenchCommand } from '../features/toolbench/openToolbenchCommand';
 import { AutoUploadOnSave } from '../features/upload/autoUploadOnSave';
 import { ShowHistoryCommand, UploadLastCommand } from '../features/upload/historyCommands';
@@ -47,7 +48,8 @@ export class CommandManager {
 
     /** 注册全部命令、语言提供者与监听器。 */
     public registerAll(): void {
-        this.registerCommands();
+        this.registerCommands(this.createCommands());
+        this.registerCommands(registerLlmFeature(this.context, this.logger));
         this.registerLanguageProviders();
         this.registerListeners();
     }
@@ -72,8 +74,8 @@ export class CommandManager {
         ];
     }
 
-    private registerCommands(): void {
-        for (const command of this.createCommands()) {
+    private registerCommands(commands: CommandContribution[]): void {
+        for (const command of commands) {
             const disposable = vscode.commands.registerCommand(command.id, (...args: unknown[]) =>
                 command.execute(...args)
             );

@@ -70,6 +70,37 @@
         "command": "yuxuanplugin.selectHttpEnvironment",
         "title": "选择环境",
         "category": "HTTP"
+      },
+      {
+        "command": "yuxuanplugin.llm.setApiKey",
+        "title": "设置 API Key",
+        "category": "Yuxuan LLM"
+      },
+      {
+        "command": "yuxuanplugin.llm.clearApiKey",
+        "title": "清除 API Key",
+        "category": "Yuxuan LLM"
+      },
+      {
+        "command": "yuxuanplugin.llm.testEndpoint",
+        "title": "测试端点",
+        "category": "Yuxuan LLM"
+      },
+      {
+        "command": "yuxuanplugin.llm.openSettings",
+        "title": "打开端点设置",
+        "category": "Yuxuan LLM"
+      },
+      {
+        "command": "yuxuanplugin.llm.showLogs",
+        "title": "显示日志",
+        "category": "Yuxuan LLM"
+      }
+    ],
+    "languageModelChatProviders": [
+      {
+        "vendor": "yuxuanllm",
+        "displayName": "Yuxuan LLM"
       }
     ],
     "menus": {
@@ -204,6 +235,123 @@
           "description": "HTTP 测试台请求超时时间（毫秒）",
           "scope": "resource",
           "order": 80
+        },
+        "yuxuanplugin.llm.endpoints": {
+          "type": "array",
+          "default": [
+            {
+              "id": "oofo",
+              "name": "OOFO",
+              "baseUrl": "https://ai.oofo.cc/v1",
+              "models": [
+                {
+                  "id": "gpt-6.1-sol",
+                  "name": "GPT 6.1 Sol",
+                  "maxInputTokens": 984000,
+                  "maxOutputTokens": 16000,
+                  "toolCalling": true,
+                  "vision": false
+                }
+              ]
+            },
+            {
+              "id": "orbi",
+              "name": "Orbi",
+              "baseUrl": "https://api.orbiorbi.com/v1",
+              "models": [
+                {
+                  "id": "gpt-6.1-sol",
+                  "name": "GPT 6.1 Sol",
+                  "maxInputTokens": 984000,
+                  "maxOutputTokens": 16000,
+                  "toolCalling": true,
+                  "vision": false
+                }
+              ]
+            }
+          ],
+          "description": "Yuxuan LLM 的 OpenAI 兼容端点列表（使用 /chat/completions）。API Key 通过命令「Yuxuan LLM: 设置 API Key」保存在 SecretStorage 中，不会写入设置。",
+          "scope": "application",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "baseUrl",
+              "models"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]+$",
+                "description": "端点唯一标识，仅允许字母、数字、下划线和连字符"
+              },
+              "name": {
+                "type": "string",
+                "description": "端点显示名称"
+              },
+              "baseUrl": {
+                "type": "string",
+                "description": "接口基础地址，例如 https://example.com/v1"
+              },
+              "headers": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "附加请求头（请勿在此放置密钥）"
+              },
+              "models": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "发送给服务端的模型名"
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "模型显示名称"
+                    },
+                    "maxInputTokens": {
+                      "type": "number",
+                      "description": "最大输入 token 数"
+                    },
+                    "maxOutputTokens": {
+                      "type": "number",
+                      "description": "最大输出 token 数"
+                    },
+                    "toolCalling": {
+                      "type": "boolean",
+                      "description": "是否支持工具调用"
+                    },
+                    "vision": {
+                      "type": "boolean",
+                      "description": "是否支持图片输入"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "order": 90
+        },
+        "yuxuanplugin.llm.requestTimeout": {
+          "type": "number",
+          "default": 120000,
+          "description": "Yuxuan LLM 请求无响应超时时间（毫秒）",
+          "scope": "application",
+          "order": 91
+        },
+        "yuxuanplugin.llm.logRequests": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否在日志中记录脱敏的请求摘要（字段、工具名、图片数量、请求体大小），用于排查网关报错",
+          "scope": "application",
+          "order": 92
         }
       }
     },
