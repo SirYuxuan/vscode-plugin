@@ -130,7 +130,7 @@ export class LlmChatProvider implements vscode.LanguageModelChatProvider, vscode
             for (const model of endpoint.models) {
                 infos.push({
                     id: LlmConfig.toVsCodeModelId(endpoint.id, model.id),
-                    name: model.name,
+                    name: `[${endpoint.name}] ${model.name}`,
                     family: model.id,
                     version: MODEL_VERSION,
                     detail: endpoint.name,
