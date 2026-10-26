@@ -36,6 +36,13 @@ export class LlmChatProvider implements vscode.LanguageModelChatProvider, vscode
         ];
     }
 
+    /**
+     * 主动通知 VS Code 重新获取模型列表，避免扩展升级后继续沿用缓存的旧模型信息。
+     */
+    public refresh(): void {
+        this.changeEmitter.fire();
+    }
+
     public async provideLanguageModelChatInformation(
         options: vscode.PrepareLanguageModelChatModelOptions,
         _token: vscode.CancellationToken

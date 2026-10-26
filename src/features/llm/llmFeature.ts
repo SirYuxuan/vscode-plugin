@@ -42,6 +42,7 @@ export function registerLlmFeature(
         provider,
         vscode.lm.registerLanguageModelChatProvider(LLM_VENDOR, provider)
     );
+    provider.refresh();
 
     return [
         new SetApiKeyCommand(config, keys),
